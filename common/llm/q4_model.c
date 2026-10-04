@@ -520,10 +520,11 @@ float *q4_model_forward(q4_model_t *m, int token, int pos) {
  * and turns the write stream into constant conflict misses. The tile absorbs
  * Q4_TILE_D rows and flushes each destination line exactly once. */
 #define Q4_TILE_D 32
+#define Q4_BATCH_MAX 64                           /* matmul_batch's per-token accumulator */
 static void matmul_batch(float *out, const int8_t *xq, const float *xs, int n_tok,
                          const q4w_t *w, int n, int d, int gs, float *tile) {
     int8_t wg[64] __attribute__((aligned(16)));   /* unpacked group */
-    float acc[64];                                /* per-token row accumulator (n_tok < seq 64) */
+    float acc[Q4_BATCH_MAX];                      /* per-token row accumulator (ensure_batch caps n_tok) */
     int ngroups = n / gs, sg = n / gs;            /* scale stride per token */
     for (int i0 = 0; i0 < d; i0 += Q4_TILE_D) {
         int td = d - i0 < Q4_TILE_D ? d - i0 : Q4_TILE_D;
@@ -559,19 +560,25 @@ static void matmul_batch(float *out, const int8_t *xq, const float *xs, int n_to
     }
 }
 
+/* bmax only grows once every buffer is in hand: a failed allocation keeps the
+ * previous set (and bmax) so a later, smaller batch still has valid buffers */
 static bool ensure_batch(q4_model_t *m, int n) {
     if (m->bmax >= n) return true;
+    if (n > Q4_BATCH_MAX) return false;           /* the caller falls back to token by token */
     const q4_config_t *c = &m->c; int gs = m->gs;
+    float *bx   = m->alloc((size_t)n * c->dim * 4);
+    float *bxb  = m->alloc((size_t)n * c->dim * 4);
+    float *bq   = m->alloc((size_t)n * c->dim * 4);
+    float *bhb  = m->alloc((size_t)n * c->hidden_dim * 4);
+    float *bhb2 = m->alloc((size_t)n * c->hidden_dim * 4);
+    int8_t *bxq_q = alloc16_fast(m, (size_t)n * c->dim); float *bxq_s = alloc16_fast(m, (size_t)n * (c->dim / gs) * 4);
+    int8_t *bhq_q = alloc16_fast(m, (size_t)n * c->hidden_dim); float *bhq_s = alloc16_fast(m, (size_t)n * (c->hidden_dim / gs) * 4);
+    float *btile = alloc16_fast(m, (size_t)n * Q4_TILE_D * 4);
+    if (!(bx && bxb && bq && bhb && bhb2 && bxq_q && bxq_s && bhq_q && bhq_s && btile)) return false;
+    m->bx = bx; m->bxb = bxb; m->bq = bq; m->bhb = bhb; m->bhb2 = bhb2;
+    m->bxq_q = bxq_q; m->bxq_s = bxq_s; m->bhq_q = bhq_q; m->bhq_s = bhq_s; m->btile = btile;
     m->bmax = n;
-    m->bx   = m->alloc((size_t)n * c->dim * 4);
-    m->bxb  = m->alloc((size_t)n * c->dim * 4);
-    m->bq   = m->alloc((size_t)n * c->dim * 4);
-    m->bhb  = m->alloc((size_t)n * c->hidden_dim * 4);
-    m->bhb2 = m->alloc((size_t)n * c->hidden_dim * 4);
-    m->bxq_q = alloc16_fast(m, (size_t)n * c->dim); m->bxq_s = alloc16_fast(m, (size_t)n * (c->dim / gs) * 4);
-    m->bhq_q = alloc16_fast(m, (size_t)n * c->hidden_dim); m->bhq_s = alloc16_fast(m, (size_t)n * (c->hidden_dim / gs) * 4);
-    m->btile = alloc16_fast(m, (size_t)n * Q4_TILE_D * 4);
-    return m->bx && m->bxb && m->bq && m->bhb && m->bhb2 && m->bxq_q && m->bxq_s && m->bhq_q && m->bhq_s && m->btile;
+    return true;
 }
 
 float *q4_model_prefill(q4_model_t *m, const int *toks, int n) {
@@ -688,8 +695,10 @@ int64_t q4_model_bench(q4_model_t *m, int which, int n_tok, int64_t (*clock_us)(
     switch (which) {
     case 0: {
         int8_t a[64] __attribute__((aligned(16))); memset(a, 3, sizeof a);
+        int nb = 1;                                /* walk the 64-byte groups bxq_q holds */
+        while (nb * 2 <= n_tok * c->dim / 64) nb *= 2;
         volatile int32_t sink = 0;
-        for (int i = 0; i < 100000; i++) sink += dot_i8_64(a, m->bxq_q + (i & 1023) * 64);
+        for (int i = 0; i < 100000; i++) sink += dot_i8_64(a, m->bxq_q + (i & (nb - 1)) * 64);
         (void)sink; break;
     }
     case 1: case 2: matmul_batch(m->bhb, m->bxq_q, m->bxq_s, n_tok, w, c->dim, c->hidden_dim, gs, m->btile); break;

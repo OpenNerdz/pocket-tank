@@ -146,6 +146,7 @@ uint8_t display_port_brightness(void) { return s_brightness; }
  * stripe buffer; two stripe buffers ping-pong so the transpose of stripe N+1
  * overlaps the DMA of stripe N. */
 void display_port_flush(const uint16_t *fb) {
+    if (!s_panel || !s_stripe_free) return;     /* init failed (no DMA stripes): draw nothing, don't hang */
     int cur = 0;
     for (int py0 = 0; py0 < PANEL_H; py0 += STRIPE_ROWS) {
         xSemaphoreTake(s_stripe_free, portMAX_DELAY);
@@ -177,6 +178,7 @@ void display_port_flush(const uint16_t *fb) {
         if (err != ESP_OK) {
             static int logged;
             if (logged++ < 3) ESP_LOGE(TAG, "draw_bitmap py0=%d: %s", py0, esp_err_to_name(err));
+            xSemaphoreGive(s_stripe_free);      /* nothing was queued, so on_trans_done won't return the slot */
         }
         cur ^= 1;
     }

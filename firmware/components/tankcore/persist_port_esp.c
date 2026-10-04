@@ -5,6 +5,8 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 static const char *TAG = "persist";
@@ -12,8 +14,16 @@ static const char *TAG = "persist";
 bool persist_port_load(void *buf, size_t max, size_t *got) {
     nvs_handle_t h; if (nvs_open("tank", NVS_READONLY, &h) != ESP_OK) return false;
     size_t len = 0; esp_err_t e = nvs_get_blob(h, "save", NULL, &len);   /* the stored length first */
-    if (e == ESP_OK && (len == 0 || len > max)) e = ESP_ERR_NVS_INVALID_LENGTH;   /* a newer build's save */
-    if (e == ESP_OK) e = nvs_get_blob(h, "save", buf, &len);
+    if (e == ESP_OK && len == 0) e = ESP_ERR_NVS_INVALID_LENGTH;
+    if (e == ESP_OK && len > max) {             /* a newer build's save: keep the prefix this build knows */
+        uint8_t *all = malloc(len);
+        if (!all) e = ESP_ERR_NO_MEM;
+        else {
+            e = nvs_get_blob(h, "save", all, &len);
+            if (e == ESP_OK) { memcpy(buf, all, max); len = max; }
+            free(all);
+        }
+    } else if (e == ESP_OK) e = nvs_get_blob(h, "save", buf, &len);
     nvs_close(h);
     if (e == ESP_OK) *got = len;
     else if (e != ESP_ERR_NVS_NOT_FOUND) ESP_LOGW(TAG, "load failed: %s (%u bytes)", esp_err_to_name(e), (unsigned)len);

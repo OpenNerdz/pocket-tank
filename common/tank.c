@@ -40,6 +40,21 @@ float tank_randf(tank_t *t, float lo, float hi) {
 static float clampf(float v, float lo, float hi) {
     return v < lo ? lo : v > hi ? hi : v;
 }
+/* The tank clock is a float and only feeds animation phases and short
+ * intervals. Left to grow, its frame steps round: a week's sleep span makes a
+ * 40 ms frame count as 62.5 ms, and past ~12 days of uptime a frame no longer
+ * moves it at all. It is folded back by a whole CLOCK_FOLD_S (a multiple of
+ * the 24 s snail cycle and the 1.8 s battery sweep); the zone stamps move with
+ * it and stay at least a fold old, so staleness is kept. */
+#define CLOCK_FOLD_S 4032.0f
+static void clock_fold(tank_t *t) {
+    if (t->clock < CLOCK_FOLD_S) return;
+    float k = floorf(t->clock / CLOCK_FOLD_S) * CLOCK_FOLD_S;
+    t->clock -= k;
+    for (int i = 0; i < t->n_fish; i++)
+        for (int z = 0; z < 6; z++)
+            t->fish[i].zone_seen[z] = fmaxf(t->fish[i].zone_seen[z] - k, -CLOCK_FOLD_S);
+}
 static float norm_ang(float a) {
     while (a >  3.14159265f) a -= TAU;
     while (a < -3.14159265f) a += TAU;
@@ -1027,6 +1042,7 @@ void tank_tick_sleep(tank_t *t, float seconds) {
     if (seconds <= 0) return;
     float h = seconds / 3600.0f;
     t->clock += seconds;
+    clock_fold(t);
     for (int i = 0; i < t->n_fish; i++) {
         fish_t *f = &t->fish[i];
         f->hunger = clampf(f->hunger + SLEEP_HUNGER_PER_H * h, 0, 10);
@@ -1050,8 +1066,10 @@ void tank_tick_sleep(tank_t *t, float seconds) {
      * bit of algae from forming overnight (2026-09-04). */
     t->algae_acc += seconds;
     int steps = (int)(t->algae_acc / ALGAE_STEP_SLEEP_S);
-    if (steps > 600) steps = 600;                       /* bounded; the cap rules anyway */
-    t->algae_acc -= steps * ALGAE_STEP_SLEEP_S;
+    if (steps > 600) {                                  /* bounded; the cap rules anyway */
+        steps = 600;                                    /* the excess is dropped, not left for */
+        t->algae_acc = fmodf(t->algae_acc, ALGAE_STEP_SLEEP_S);   /* the awake tick to flood in */
+    } else t->algae_acc -= steps * ALGAE_STEP_SLEEP_S;
     tank_grow_algae(t, steps);
 }
 
@@ -1481,6 +1499,7 @@ static uint32_t state_signature(const tank_t *t, int idx) {
 
 void tank_tick(tank_t *t, float dt, advisor_fn advise) {
     t->clock += dt;
+    clock_fold(t);
     /* the light: on while the device is handled, off LIGHT_IDLE_S after the
      * last touch or movement (tank_handled) - a tank left on the desk goes
      * dark and the fish sleep. A setup page or a prompt holds it on; the

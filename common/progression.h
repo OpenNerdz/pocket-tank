@@ -30,7 +30,9 @@
 
 /* ---- platform ports (sim: file + time(); device: NVS + RTC) ---- */
 bool    persist_port_load(void *buf, size_t max, size_t *got); /* the saved blob, whatever length an older
-                                                            * build wrote (<= max; *got = it); false = nothing saved */
+                                                            * build wrote (<= max; *got = it); a newer build's
+                                                            * longer blob gives its first max bytes (*got = max);
+                                                            * false = nothing saved */
 bool    persist_port_save(const void *buf, size_t len);
 bool    persist_port_erase(void);                          /* EVERY saved tank, parked copies included */
 int64_t clock_port_now_unix(void);                         /* 0 if unknown */
