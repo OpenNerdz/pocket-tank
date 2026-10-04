@@ -152,7 +152,7 @@ def main():
     open(os.path.join(out, ".htaccess"), "w").write(
         "AddType application/octet-stream .bin\nAddType application/json .json\n"
         "AddType text/javascript .js\n"
-        "<IfModule mod_headers>\n<FilesMatch \"\\.html$\">\n"
+        "<IfModule mod_headers.c>\n<FilesMatch \"\\.html$\">\n"
         "Header set Cache-Control \"no-cache, must-revalidate\"\n</FilesMatch>\n</IfModule>\n")
 
     page = open(os.path.join(ROOT, "installer", "index.html")).read()

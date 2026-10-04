@@ -16,8 +16,8 @@ static const char *path(void) {
 }
 bool persist_port_load(void *buf, size_t max, size_t *got) {
     FILE *f = fopen(path(), "rb"); if (!f) return false;
-    size_t n = fread(buf, 1, max, f); bool longer = fgetc(f) != EOF; fclose(f);
-    if (longer || n == 0) return false;          /* a newer build's save, or empty */
+    size_t n = fread(buf, 1, max, f); fclose(f);   /* a newer build's longer save: its prefix */
+    if (n == 0) return false;                       /* empty */
     *got = n; return true;
 }
 bool persist_port_save(const void *buf, size_t len) {

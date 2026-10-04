@@ -509,7 +509,9 @@ static bool load_save(tank_t *t, int64_t *saved_unix) {
     save_t sv; memset(&sv, 0, sizeof sv);
     *saved_unix = 0;
     /* an older build's shorter save fills a prefix; the zeroed rest reads as
-     * every later tail's defaults (see the tail comments in save_t) */
+     * every later tail's defaults (see the tail comments in save_t). Tails only
+     * append, so a newer build's longer save loads as the prefix this build
+     * knows - rejecting it would start fresh and overwrite the keeper's tank. */
     size_t got = 0;
     bool loaded = persist_port_load(&sv, sizeof sv, &got) && got >= SAVE_CORE_SIZE && got <= sizeof sv;
     if (!loaded || sv.magic != SAVE_MAGIC || sv.n_fish < 2 || sv.n_fish > N_FISH_MAX) return false;

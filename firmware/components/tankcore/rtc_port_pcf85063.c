@@ -18,15 +18,20 @@ static i2c_master_dev_handle_t s_dev;
 static int bcd2bin(uint8_t b) { return (b >> 4) * 10 + (b & 0x0f); }
 static uint8_t bin2bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
 
-static bool rtc_read(struct tm *out) {
+typedef enum { RTC_VALID, RTC_UNSET, RTC_NO_ANSWER } rtc_read_t;
+
+static rtc_read_t rtc_read(struct tm *out) {
     uint8_t reg = REG_SECONDS, b[7];
-    if (i2c_master_transmit_receive(s_dev, &reg, 1, b, 7, 100) != ESP_OK) return false;
+    esp_err_t err = ESP_FAIL;
+    for (int tries = 0; tries < 3 && err != ESP_OK; tries++)
+        err = i2c_master_transmit_receive(s_dev, &reg, 1, b, 7, 100);
+    if (err != ESP_OK) return RTC_NO_ANSWER;
     memset(out, 0, sizeof *out);
     out->tm_sec = bcd2bin(b[0] & 0x7f); out->tm_min = bcd2bin(b[1] & 0x7f);
     out->tm_hour = bcd2bin(b[2] & 0x3f); out->tm_mday = bcd2bin(b[3] & 0x3f);
     out->tm_wday = b[4] & 0x07; out->tm_mon = bcd2bin(b[5] & 0x1f) - 1;
     out->tm_year = bcd2bin(b[6]) + 100;                 /* 20xx */
-    return !(b[0] & 0x80);                              /* OS flag set = clock invalid */
+    return (b[0] & 0x80) ? RTC_UNSET : RTC_VALID;       /* OS flag set = clock invalid */
 }
 static bool rtc_write(const struct tm *t) {
     uint8_t w[8] = { REG_SECONDS, bin2bcd(t->tm_sec), bin2bcd(t->tm_min), bin2bcd(t->tm_hour),
@@ -38,7 +43,14 @@ bool rtc_port_init(i2c_master_bus_handle_t bus) {
     i2c_device_config_t cfg = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = PCF85063_ADDR, .scl_speed_hz = 400000 };
     if (!bus || i2c_master_bus_add_device(bus, &cfg, &s_dev) != ESP_OK) { ESP_LOGW(TAG, "no RTC"); return false; }
     struct tm t;
-    if (rtc_read(&t) && t.tm_year + 1900 >= 2024) {
+    rtc_read_t r = rtc_read(&t);
+    if (r == RTC_NO_ANSWER) {
+        /* a bus error is not an unset clock: seeding here would overwrite a
+         * good RTC with the build time. Leave the wall clock unknown (0). */
+        ESP_LOGW(TAG, "RTC read failed; wall clock unknown this boot");
+        return false;
+    }
+    if (r == RTC_VALID && t.tm_year + 1900 >= 2024) {
         struct timeval tv = { .tv_sec = mktime(&t) };
         settimeofday(&tv, NULL);
         ESP_LOGI(TAG, "system clock set from RTC: %04d-%02d-%02d %02d:%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min);

@@ -588,7 +588,15 @@ void app_main(void) {
                           .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&btn);
     gpio_deep_sleep_hold_dis();              /* a deep-sleep wake is a boot: the night's pad holds end here */
-    if (nvs_flash_init() != ESP_OK) { nvs_flash_erase(); nvs_flash_init(); }
+    {   /* erase only when NVS itself asks for it (full / newer layout): any other
+         * init error must not wipe the tank save, settings and battery history */
+        esp_err_t nerr = nvs_flash_init();
+        if (nerr == ESP_ERR_NVS_NO_FREE_PAGES || nerr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            ESP_LOGW(TAG, "nvs: %s - erasing", esp_err_to_name(nerr));
+            nvs_flash_erase(); nerr = nvs_flash_init();
+        }
+        if (nerr != ESP_OK) ESP_LOGE(TAG, "nvs init failed: %s - nothing will be saved this boot", esp_err_to_name(nerr));
+    }
     { int carried = batlog_init();       /* the battery log survives every reset but a power-on */
       if (carried) ESP_LOGI(TAG, "batlog: %d samples carried through the reset (director `batlog` reads them)", carried); }
     brightness_init();

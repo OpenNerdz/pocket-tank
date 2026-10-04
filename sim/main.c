@@ -23,7 +23,7 @@
  *                          through a canopy = trim that bed; drag = wipe algae;
  *                          3 quick taps = startle; 2 taps = the light, in
  *                          settings' MANUAL mode, the default)
- *   ./fishsim --fresh      ignore the save (new tank: random pair)
+ *   ./fishsim --fresh      erase the save (new tank: random pair)
  *   ./fishsim --fast N     tended time runs N x faster (stages, drift)
  *   ./fishsim --battery N  the pretend battery starts at N% (default 72)
  *   ./fishsim --greedy     greedy decoding instead of sampling
@@ -758,6 +758,17 @@ static int selftest_sleep(void) {
         tank_set_name(&tank, 0, "Fez");
         progression_save(&tank);
         const char *sav = getenv("POCKET_TANK_SAVE");
+        {   /* a newer build's save is longer (tails only append): it must load
+               as its prefix, not start fresh and overwrite the keeper's tank */
+            FILE *f = fopen(sav, "ab"); if (!f) return 1;
+            for (int i = 0; i < 64; i++) fputc(0xa5, f);
+            fclose(f);
+            tank_init(&tank, 8);
+            progression_boot(&tank);
+            if (tank.n_fish != 2 || strcmp(tank.fish[0].name, "fez")) {
+                printf("FAIL: a newer build's longer save came back as %d fish, %s\n", tank.n_fish, tank.n_fish ? tank.fish[0].name : "-"); return 1; }
+            printf("selftest-sleep: a newer build's longer save loads its known prefix\n");
+        }
         static const long older[] = { 1480, 1440, 1436, 1408, 1304, 1112, 448 };   /* 1480 = the light-settings build, before the shop */
         for (size_t k = 0; k < sizeof older / sizeof *older; k++) {
             if (truncate(sav, older[k])) { printf("FAIL: could not truncate the save to %ld\n", older[k]); return 1; }
@@ -868,6 +879,28 @@ static int selftest_tend(void) {
         for (int i = 0; i < ALGAE_CELLS; i++) f2 += sliced.algae[i] > 0;
         printf("selftest-tend: the same night in 30 s drowse slices: %d algae cells\n", f2);
         if (f2 < film / 2) { printf("FAIL: drowse slices do not grow algae\n"); return 1; }
+    }
+    /* a week away: the 600-step cap drops the excess film time instead of
+     * leaving it for the awake tick to flood the freshly wiped glass, and the
+     * float tank clock still advances a frame at a time (it folds back) */
+    {
+        tank_t away; tank_init(&away, 778); progression_boot(&away);
+        tank_tick_sleep(&away, 7 * 86400.0f);
+        memset(away.algae, 0, sizeof away.algae);           /* the keeper wipes the glass */
+        for (int i = 0; i < 10 * 25; i++) tank_tick(&away, 0.04f, advisor_rules);
+        float cover = tank_algae_cover(&away);
+        printf("selftest-tend: wiped after a week away, 10 s later: %.0f%% film\n", cover * 100);
+        if (cover > 0.05f) { printf("FAIL: the week's capped film time flooded the glass after the wake\n"); return 1; }
+        static const float starts[] = { 0, 1048576.0f };      /* just woke / ~12 days of uptime */
+        for (size_t k = 0; k < sizeof starts / sizeof *starts; k++) {
+            if (starts[k] > 0) away.clock = starts[k];
+            tank_tick(&away, 0.04f, advisor_rules);              /* folds a large clock back */
+            float c0 = away.clock;
+            tank_tick(&away, 0.04f, advisor_rules);
+            float step = away.clock - c0;
+            if (step < 0.039f || step > 0.041f) { printf("FAIL: a 40 ms frame moved the tank clock %.4f s (clock %.0f)\n", step, c0); return 1; }
+        }
+        printf("selftest-tend: the tank clock keeps 40 ms frames after a week asleep and after 12 days awake\n");
     }
     /* height is growth: a full bed's tallest frond touches the ceiling */
     {
@@ -2498,10 +2531,7 @@ int main(int argc, char **argv) {
         if (strcmp(argv[a], "--battery") == 0 && a + 1 < argc) sim_bat_pct = fminf(100, fmaxf(0, (float)atof(argv[++a])));
         if (strcmp(argv[a], "--fast") == 0 && a + 1 < argc) progression_time_scale = (float)atof(argv[++a]);
     }
-    if (fresh) {
-        char cmd[600]; snprintf(cmd, sizeof cmd, "rm -f '%s/.cache/pocket-tank/tank.sav'", getenv("HOME") ? getenv("HOME") : ".");
-        (void)system(cmd);
-    }
+    if (fresh) persist_port_erase();
     progression_boot(&tank);               /* restore, or a new random pair */
     print_roster(&tank);
     notice_sync(&tank);                    /* nothing old gets announced */
